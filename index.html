@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AutoScan">
+<title>AutoScan</title>
+<style>
+  :root { --bg:#111417; --panel:#1b2026; --line:#2c333c; --fg:#e8ecef; --dim:#8b96a3; --acc:#3ddc97; --warn:#ffb020; --bad:#ff5d5d; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:15px/1.35 -apple-system,system-ui,"Segoe UI",Roboto,sans-serif; overscroll-behavior:none; }
+  body { display:flex; flex-direction:column; height:100dvh;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  button { font:inherit; color:inherit; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  button:active { filter:brightness(1.3); }
+  button:disabled { opacity:.4; }
+
+  header { display:flex; align-items:center; gap:10px; padding:8px 12px; }
+  #status { flex:1; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #status.ok { color:var(--acc); } #status.move { color:var(--warn); }
+  #count { font-variant-numeric:tabular-nums; color:var(--dim); }
+
+  #stage { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; position:relative; }
+  #frame { position:relative; overflow:hidden; background:#000; border-radius:6px; }
+  #video { width:100%; height:100%; object-fit:cover; display:block; }
+  /* Huge box-shadow dims everything outside the crop guide */
+  #guide { position:absolute; border:2px solid var(--acc); border-radius:3px; box-shadow:0 0 0 9999px rgba(0,0,0,.5); pointer-events:none; transition:border-color .15s; }
+  #guide.move { border-color:var(--warn); }
+  #flash { position:absolute; inset:0; background:#fff; opacity:0; pointer-events:none; }
+  #flash.on { animation:flash .35s ease-out; }
+  @keyframes flash { from { opacity:.85; } to { opacity:0; } }
+
+  #meter { position:relative; height:8px; margin:8px 12px 0; background:var(--panel); border-radius:4px; overflow:hidden; }
+  #meterBar { height:100%; width:0; background:var(--acc); }
+  #meterBar.move { background:var(--warn); }
+  .mark { position:absolute; top:0; bottom:0; width:2px; background:var(--fg); opacity:.6; }
+
+  #thumbs { display:flex; gap:6px; overflow-x:auto; padding:8px 12px; min-height:92px; align-items:center; }
+  #thumbs:empty::before { content:"Noch keine Seiten"; color:var(--dim); }
+  .th { position:relative; flex:0 0 auto; }
+  .th img { height:74px; display:block; border-radius:4px; border:1px solid var(--line); }
+  .th span { position:absolute; left:3px; bottom:3px; font-size:11px; background:rgba(0,0,0,.7); padding:0 4px; border-radius:3px; }
+  .th button { position:absolute; right:-4px; top:-4px; width:22px; height:22px; padding:0; border-radius:50%; background:var(--bad); border:none; color:#000; font-weight:700; line-height:22px; }
+
+  #controls { display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:center; padding:4px 12px 10px; }
+  #btnShot { width:62px; height:62px; border-radius:50%; background:var(--fg); border:4px solid var(--line); padding:0; }
+  #btnAuto.on { border-color:var(--acc); color:var(--acc); }
+  #btnPdf { background:var(--acc); color:#06281a; border-color:var(--acc); font-weight:700; }
+
+  details { margin:0 12px 8px; background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+  summary { padding:8px 12px; color:var(--dim); }
+  .set { display:grid; grid-template-columns:auto 1fr auto; gap:8px 10px; align-items:center; padding:4px 12px 12px; }
+  .set select, .set input[type=range] { width:100%; }
+  select, input[type=text] { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px; }
+  .val { color:var(--dim); font-variant-numeric:tabular-nums; min-width:4.5em; text-align:right; }
+
+  .overlay { position:fixed; inset:0; background:rgba(10,12,14,.94); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:24px; text-align:center; z-index:10; }
+  .overlay[hidden] { display:none; }
+  .overlay h1 { margin:0; font-size:26px; }
+  .overlay p { margin:0; color:var(--dim); max-width:34ch; }
+  .big { font-size:18px; padding:14px 22px; background:var(--acc); color:#06281a; border-color:var(--acc); font-weight:700; text-decoration:none; border-radius:10px; }
+  .overlay input[type=text] { width:min(100%,320px); text-align:center; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }
+  a.btn { display:inline-block; border:1px solid var(--line); border-radius:10px; padding:10px 12px; color:var(--fg); text-decoration:none; background:var(--panel); }
+  #err { color:var(--bad); }
+</style>
+</head>
+<body>
+
+<header>
+  <div id="status">Bereit</div>
+  <div id="count">0 Seiten</div>
+</header>
+
+<div id="stage">
+  <div id="frame">
+    <video id="video" playsinline muted autoplay></video>
+    <div id="guide"></div>
+    <div id="flash"></div>
+  </div>
+</div>
+
+<div id="meter"><div id="meterBar"></div><div class="mark" id="markStill"></div><div class="mark" id="markMove"></div></div>
+
+<div id="thumbs"></div>
+
+<div id="controls">
+  <button id="btnAuto" class="on">Auto: An</button>
+  <button id="btnShot" aria-label="Manuell auslösen"></button>
+  <button id="btnPdf" disabled>PDF</button>
+</div>
+
+<details>
+  <summary>Einstellungen</summary>
+  <div class="set">
+    <label for="selMode">Format</label>
+    <select id="selMode">
+      <option value="a4p">A4 hoch</option>
+      <option value="a4l">A4 quer</option>
+      <option value="full">Ganzes Bild</option>
+    </select><span></span>
+
+    <label for="rngStill">Ruhe-Schwelle</label>
+    <input id="rngStill" type="range" min="0.5" max="5" step="0.1" value="1.5">
+    <span class="val" id="valStill"></span>
+
+    <label for="rngHold">Haltezeit</label>
+    <input id="rngHold" type="range" min="300" max="2000" step="100" value="700">
+    <span class="val" id="valHold"></span>
+
+    <label for="selRes">Auflösung</label>
+    <select id="selRes">
+      <option value="1600">1600 px (klein)</option>
+      <option value="2400" selected>2400 px</option>
+      <option value="0">Original</option>
+    </select><span></span>
+
+    <label for="chkSound">Ton</label>
+    <input id="chkSound" type="checkbox" checked style="justify-self:start"><span></span>
+
+    <span>Kamera</span><span id="camInfo" style="color:var(--dim)">–</span><span></span>
+  </div>
+</details>
+
+<!-- Start overlay: getUserMedia and AudioContext both want a user gesture -->
+<div class="overlay" id="ovStart">
+  <h1>AutoScan</h1>
+  <p>Blatt in den Rahmen legen. Sobald das Bild ruhig ist, wird automatisch ausgelöst. Danach umblättern.</p>
+  <button class="big" id="btnStart">Kamera starten</button>
+  <p id="err"></p>
+</div>
+
+<div class="overlay" id="ovExport" hidden>
+  <h1>PDF fertig</h1>
+  <p id="pdfInfo"></p>
+  <input id="fname" type="text" spellcheck="false">
+  <div class="row">
+    <button class="big" id="btnShare">Teilen → OneDrive</button>
+  </div>
+  <div class="row">
+    <a class="btn" id="lnkDl">Herunterladen</a>
+    <button id="btnBack">Zurück zum Scannen</button>
+    <button id="btnReset">Alle Seiten löschen</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const video = $('video'), frame = $('frame'), guide = $('guide'), stage = $('stage');
+
+// ---------- state ----------
+const pages = [];            // {blob, w, h, thumb}
+let stream = null, started = false, auto = true, busy = false;
+let g = { x:0, y:0, w:1, h:1 };   // crop rect in video pixel coordinates
+let prev = null;             // previous low-res sample
+let lastCap = null;          // low-res sample of the last captured page
+let armed = true;            // true once real motion (page turn) was seen since last capture
+let stillSince = 0;
+let pdfBlob = null, wakeLock = null, audioCtx = null;
+
+// Low-res analysis buffer: 72x72 is plenty to see a page turn and
+// averages away sensor noise; aspect distortion does not matter here.
+const SW = 72, SH = 72;
+const sCan = document.createElement('canvas'); sCan.width = SW; sCan.height = SH;
+const sCtx = sCan.getContext('2d', { willReadFrequently:true });
+// One reused full-res canvas: iOS Safari has a hard cap on total canvas memory.
+const cap = document.createElement('canvas'); const cCtx = cap.getContext('2d');
+const tCan = document.createElement('canvas'); const tCtx = tCan.getContext('2d');
+
+// ---------- settings ----------
+const cfg = () => {
+  const still = +$('rngStill').value;
+  return { still, move: still * 3, change: still * 2, hold: +$('rngHold').value,
+           maxEdge: +$('selRes').value || Infinity, mode: $('selMode').value };
+};
+function showCfg() {
+  const c = cfg();
+  $('valStill').textContent = c.still.toFixed(1);
+  $('valHold').textContent = c.hold + ' ms';
+  const full = c.move * 1.5;                       // meter full-scale
+  $('markStill').style.left = (c.still / full * 100) + '%';
+  $('markMove').style.left = (c.move / full * 100) + '%';
+}
+['rngStill','rngHold'].forEach(id => $(id).addEventListener('input', showCfg));
+$('selMode').addEventListener('change', () => { computeGuide(); prev = null; lastCap = null; armed = true; });
+
+// ---------- camera ----------
+async function startCamera() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  // Ask for 4K: iOS delivers the closest mode the rear camera supports.
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio:false,
+    video:{ facingMode:{ ideal:'environment' }, width:{ ideal:3840 }, height:{ ideal:2160 } }
+  });
+  video.srcObject = stream;
+  await video.play();
+}
+function layout() {
+  const W = video.videoWidth, H = video.videoHeight;
+  if (!W) return;
+  // Fit the frame into the stage in JS so that %-positions of the guide
+  // map 1:1 onto video pixels (no letterboxing to compensate for).
+  const k = Math.min(stage.clientWidth / W, stage.clientHeight / H);
+  frame.style.width = Math.floor(W * k) + 'px';
+  frame.style.height = Math.floor(H * k) + 'px';
+  $('camInfo').textContent = W + ' × ' + H + ' px';
+  computeGuide();
+}
+function computeGuide() {
+  const W = video.videoWidth, H = video.videoHeight; if (!W) return;
+  const mode = cfg().mode;
+  const a = mode === 'full' ? W / H : mode === 'a4p' ? 1 / Math.SQRT2 : Math.SQRT2;
+  const m = mode === 'full' ? 1 : 0.94;            // small margin to make aligning easier
+  let gw = Math.min(W, H * a), gh = gw / a; gw *= m; gh *= m;
+  g = { x:(W - gw) / 2, y:(H - gh) / 2, w:gw, h:gh };
+  guide.style.left = (g.x / W * 100) + '%'; guide.style.top = (g.y / H * 100) + '%';
+  guide.style.width = (g.w / W * 100) + '%'; guide.style.height = (g.h / H * 100) + '%';
+}
+video.addEventListener('loadedmetadata', layout);
+video.addEventListener('resize', layout);          // fires when the phone is rotated
+addEventListener('resize', layout);
+
+async function requestWakeLock() {
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !started) return;
+  // iOS stops the camera track when the page goes to the background.
+  const t = stream && stream.getVideoTracks()[0];
+  if (!t || t.readyState !== 'live' || video.paused) { try { await startCamera(); } catch (e) { setStatus('Kamera nicht verfügbar', ''); } }
+  requestWakeLock(); prev = null; stillSince = 0;
+});
+
+// ---------- motion detection ----------
+function sample() {
+  sCtx.drawImage(video, g.x, g.y, g.w, g.h, 0, 0, SW, SH);
+  const d = sCtx.getImageData(0, 0, SW, SH).data, n = SW * SH, out = new Float32Array(n);
+  let sum = 0;
+  for (let i = 0; i < n; i++) { const v = (d[4*i] * 77 + d[4*i+1] * 150 + d[4*i+2] * 29) >> 8; out[i] = v; sum += v; }
+  // Remove the mean so auto-exposure drift is not mistaken for motion.
+  const mean = sum / n; for (let i = 0; i < n; i++) out[i] -= mean;
+  return out;
+}
+function diff(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; }
+
+function setStatus(txt, cls) { const s = $('status'); s.textContent = txt; s.className = cls || ''; guide.className = cls === 'move' ? 'move' : ''; }
+
+function tick() {
+  if (!started || busy || document.hidden || video.readyState < 2 || !$('ovExport').hidden) return;
+  const c = cfg(), cur = sample(), now = performance.now();
+  if (!prev) { prev = cur; return; }
+  const m = diff(cur, prev); prev = cur;
+
+  const bar = $('meterBar');
+  bar.style.width = Math.min(100, m / (c.move * 1.5) * 100) + '%';
+  bar.className = m < c.still ? '' : 'move';
+  if (!auto) { setStatus('Auto aus – manuell auslösen', ''); return; }
+
+  if (m > c.move) {                       // clear motion: page is being turned
+    armed = true; stillSince = 0; setStatus('Bewegung …', 'move');
+  } else if (m < c.still) {               // scene is at rest
+    if (!stillSince) stillSince = now;
+    if (!armed) { setStatus('Erfasst – umblättern', 'ok'); return; }
+    if (now - stillSince < c.hold) { setStatus('Ruhig – halten …', ''); return; }
+    // Second guard: a hand moved through the frame but the page is the same.
+    if (lastCap && diff(cur, lastCap) < c.change) { armed = false; return; }
+    capture(cur);
+  } else {                                // in between: neither turning nor at rest
+    stillSince = 0; if (armed) setStatus('Unruhig …', 'move');
+  }
+}
+
+// ---------- capture ----------
+async function capture(curSample) {
+  if (busy || !video.videoWidth) return;
+  busy = true;
+  try {
+    const c = cfg();
+    const k = Math.min(1, c.maxEdge / Math.max(g.w, g.h));
+    const cw = Math.round(g.w * k), ch = Math.round(g.h * k);
+    cap.width = cw; cap.height = ch;
+    cCtx.drawImage(video, g.x, g.y, g.w, g.h, 0, 0, cw, ch);
+    // Keep pages as JPEG blobs, not canvases/bitmaps, to stay within mobile RAM.
+    const blob = await new Promise(r => cap.toBlob(r, 'image/jpeg', 0.82));
+    tCan.height = 148; tCan.width = Math.round(148 * cw / ch);
+    tCtx.drawImage(cap, 0, 0, tCan.width, tCan.height);
+    pages.push({ blob, w:cw, h:ch, thumb:tCan.toDataURL('image/jpeg', 0.6) });
+    lastCap = curSample || sample(); armed = false; stillSince = 0;
+    feedback(); renderThumbs(true);
+    setStatus('Seite ' + pages.length + ' erfasst – umblättern', 'ok');
+  } finally { busy = false; }
+}
+function feedback() {
+  const f = $('flash'); f.classList.remove('on'); void f.offsetWidth; f.classList.add('on');
+  if (!$('chkSound').checked || !audioCtx) return;
+  try {
+    const o = audioCtx.createOscillator(), v = audioCtx.createGain(), t = audioCtx.currentTime;
+    o.frequency.value = 1200; v.gain.setValueAtTime(0.25, t); v.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+    o.connect(v).connect(audioCtx.destination); o.start(t); o.stop(t + 0.13);
+  } catch (e) {}
+}
+function renderThumbs(scrollEnd) {
+  const box = $('thumbs'); box.textContent = '';
+  pages.forEach((p, i) => {
+    const d = document.createElement('div'); d.className = 'th';
+    const img = new Image(); img.src = p.thumb;
+    const n = document.createElement('span'); n.textContent = i + 1;
+    const x = document.createElement('button'); x.textContent = '×'; x.setAttribute('aria-label', 'Seite ' + (i + 1) + ' löschen');
+    x.onclick = () => { pages.splice(i, 1); renderThumbs(false); };
+    d.append(img, n, x); box.append(d);
+  });
+  $('count').textContent = pages.length + (pages.length === 1 ? ' Seite' : ' Seiten');
+  $('btnPdf').disabled = !pages.length;
+  $('btnPdf').textContent = pages.length ? 'PDF (' + pages.length + ')' : 'PDF';
+  if (scrollEnd) box.scrollLeft = box.scrollWidth;
+}
+
+// ---------- PDF ----------
+// Minimal PDF writer: a JPEG can be embedded byte-for-byte as an image
+// XObject with /DCTDecode, so no library and no re-encoding is needed.
+async function buildPdf(list) {
+  const enc = new TextEncoder(), parts = [], offs = []; let pos = 0;
+  const put = d => { const u = typeof d === 'string' ? enc.encode(d) : d; parts.push(u); pos += u.length; };
+  const begin = n => { offs[n] = pos; put(n + ' 0 obj\n'); };
+  const N = list.length, total = 2 + 3 * N;
+  put('%PDF-1.4\n%âãÏÓ\n');     // binary marker line
+  begin(1); put('<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+  begin(2); put('<< /Type /Pages /Count ' + N + ' /Kids [' + list.map((_, i) => (3 + 3 * i) + ' 0 R').join(' ') + '] >>\nendobj\n');
+  for (let i = 0; i < N; i++) {
+    const p = list[i], pg = 3 + 3 * i, ct = pg + 1, im = pg + 2;
+    // Page width = A4 short/long edge in pt; height follows the image aspect.
+    const W = p.w <= p.h ? 595.28 : 841.89, H = +(W * p.h / p.w).toFixed(2);
+    begin(pg); put('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + W + ' ' + H + '] /Resources << /XObject << /Im0 ' + im + ' 0 R >> >> /Contents ' + ct + ' 0 R >>\nendobj\n');
+    const cs = 'q ' + W + ' 0 0 ' + H + ' 0 0 cm /Im0 Do Q';
+    begin(ct); put('<< /Length ' + cs.length + ' >>\nstream\n' + cs + '\nendstream\nendobj\n');
+    const jpg = new Uint8Array(await p.blob.arrayBuffer());
+    begin(im); put('<< /Type /XObject /Subtype /Image /Width ' + p.w + ' /Height ' + p.h + ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ' + jpg.length + ' >>\nstream\n');
+    put(jpg); put('\nendstream\nendobj\n');
+  }
+  const xref = pos;
+  let x = 'xref\n0 ' + (total + 1) + '\n0000000000 65535 f \n';
+  for (let n = 1; n <= total; n++) x += String(offs[n]).padStart(10, '0') + ' 00000 n \n';
+  put(x + 'trailer\n<< /Size ' + (total + 1) + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n');
+  return new Blob(parts, { type:'application/pdf' });
+}
+
+function pdfName() {
+  let n = $('fname').value.trim().replace(/[\\/:*?"<>|]/g, '_') || 'Scan';
+  return /\.pdf$/i.test(n) ? n : n + '.pdf';
+}
+$('btnPdf').onclick = async () => {
+  if (!pages.length) return;
+  setStatus('Erzeuge PDF …', '');
+  pdfBlob = await buildPdf(pages);
+  const d = new Date(), z = v => String(v).padStart(2, '0');
+  if (!$('fname').value) $('fname').value = 'Scan_' + d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + '_' + z(d.getHours()) + z(d.getMinutes());
+  $('pdfInfo').textContent = pages.length + ' Seiten, ' + (pdfBlob.size / 1048576).toFixed(1) + ' MB';
+  const a = $('lnkDl'); if (a.href) URL.revokeObjectURL(a.href);
+  a.href = URL.createObjectURL(pdfBlob);
+  $('ovExport').hidden = false;
+};
+$('lnkDl').onclick = () => { $('lnkDl').download = pdfName(); };
+// share() must run directly inside the tap handler (transient user activation),
+// which is why PDF creation and sharing are two separate steps.
+$('btnShare').onclick = async () => {
+  const file = new File([pdfBlob], pdfName(), { type:'application/pdf' });
+  if (navigator.canShare && navigator.canShare({ files:[file] })) {
+    try { await navigator.share({ files:[file] }); } catch (e) { /* user cancelled */ }
+  } else {
+    $('pdfInfo').textContent = 'Teilen wird hier nicht unterstützt – bitte „Herunterladen“ nutzen.';
+  }
+};
+$('btnBack').onclick = () => { $('ovExport').hidden = true; resetReset(); prev = null; };
+let resetArmed = false;
+function resetReset() { resetArmed = false; $('btnReset').textContent = 'Alle Seiten löschen'; }
+$('btnReset').onclick = () => {
+  if (!resetArmed) { resetArmed = true; $('btnReset').textContent = 'Wirklich löschen?'; return; }
+  pages.length = 0; lastCap = null; armed = true; pdfBlob = null; $('fname').value = '';
+  renderThumbs(false); resetReset(); $('ovExport').hidden = true; prev = null;
+};
+
+// ---------- controls ----------
+$('btnAuto').onclick = () => {
+  auto = !auto; $('btnAuto').textContent = 'Auto: ' + (auto ? 'An' : 'Aus'); $('btnAuto').classList.toggle('on', auto);
+  armed = true; stillSince = 0;
+};
+$('btnShot').onclick = () => capture(null);
+$('btnStart').onclick = async () => {
+  $('err').textContent = '';
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    $('err').textContent = 'Kamera-API nicht verfügbar. Die Seite muss über HTTPS in Safari geöffnet sein.'; return;
+  }
+  try {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); await audioCtx.resume(); } catch (e) {}
+    await startCamera();
+    started = true; $('ovStart').hidden = true;
+    requestWakeLock(); layout();
+    setInterval(tick, 120);
+  } catch (e) {
+    $('err').textContent = 'Kamera konnte nicht gestartet werden: ' + (e.name || e);
+  }
+};
+showCfg();
+</script>
+</body>
+</html>
